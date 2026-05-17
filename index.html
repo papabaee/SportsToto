@@ -3124,9 +3124,16 @@ function showTab(id){
   if(id==='streaks') renderStreaks();
   if(id==='consecutive') renderConsec();
   if(id==='heatmap') renderHeatmap();
-  if(id==='history') renderHistory();
+  if(id==='history'){
+    document.getElementById('hist-counter').textContent='⏳ Loading…';
+    renderHistory();
+  }
   if(id==='mypicks') { renderPicks(); initManualForm(); }
-  if(id==='checker') renderChecker();
+  if(id==='checker'){
+    const el=document.getElementById('added-draws-list');
+    if(el) el.innerHTML=`<p style="font-size:.82rem;color:var(--text2)">⏳ Loading…</p>`;
+    renderChecker();
+  }
   if(id==='upcoming') renderUpcoming();
   if(id==='saved-results') renderSavedResults();
 }
@@ -3549,10 +3556,13 @@ function rebuildStats(){
   document.getElementById('drawCount').textContent=`${LIVE_RAW.length} draws · 2010–2026`;
 }
 
-function renderHistory(){
+async function renderHistory(){
   histShown=0; histFiltered=null;
   document.getElementById('history-list').innerHTML='';
   document.getElementById('hist-search').value='';
+  // Always re-fetch added draws from Firestore so history stays current
+  _added = await fsLoadDraws();
+  rebuildStats();
   loadMoreHistory();
 }
 
@@ -3838,13 +3848,16 @@ function confirmDeletePick(i){
 }
 
 // ── ADD DRAW TAB ──────────────────────────────────────────────────────────────
-function renderChecker(){
+async function renderChecker(){
   const el=document.getElementById('new-draw-inputs');
   if(!el.children.length){
     let h='';
     for(let i=0;i<6;i++) h+=`<input type="number" min="1" max="58" id="nd${i}" placeholder="No.${i+1}" style="width:60px;font-family:'Source Code Pro',monospace;padding:7px;border:1.5px solid var(--border);border-radius:4px;text-align:center;font-size:.85rem;background:var(--bg2)">`;
     el.innerHTML=h;
   }
+  // Always re-fetch so the added draws list is always current
+  _added = await fsLoadDraws();
+  rebuildStats();
   const nextId=LIVE_RAW.length?LIVE_RAW[0][0]+1:'';
   const drawIdEl=document.getElementById('new-draw-id');
   if(!drawIdEl.value) drawIdEl.value=nextId;
