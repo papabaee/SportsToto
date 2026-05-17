@@ -230,6 +230,55 @@ input[type=number]{font-family:'Source Code Pro',monospace;width:54px;padding:6p
 
 <!-- MY PICKS TAB -->
 <div id="tab-mypicks" class="tab">
+
+  <!-- Manual Add Form (collapsible) -->
+  <div class="card" id="manual-pick-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleManualForm()">
+      <h3 style="margin:0">✏️ Add Pick Manually</h3>
+      <span id="manual-form-arrow" style="font-size:1rem;color:var(--accent)">▾</span>
+    </div>
+    <div id="manual-pick-form" style="margin-top:14px">
+      <!-- Numbers row -->
+      <div style="margin-bottom:12px">
+        <div style="font-size:.75rem;font-weight:700;color:var(--text2);margin-bottom:6px">6 Numbers (1–58, unique)</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap" id="manual-num-inputs">
+          <!-- filled by JS -->
+        </div>
+      </div>
+      <!-- Strategy + Date row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <div style="font-size:.75rem;font-weight:700;color:var(--text2);margin-bottom:4px">Strategy</div>
+          <select id="manual-strat" style="width:100%;font-family:'Lora',serif;font-size:.82rem;padding:7px;border:1.5px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text)">
+            <option value="Smart Mix">🧠 Smart Mix</option>
+            <option value="All Hot">🔥 All Hot</option>
+            <option value="All Cold">❄️ All Cold</option>
+            <option value="Top Pairs Based">🔗 Top Pairs</option>
+            <option value="Balanced Spread">⚖️ Balanced</option>
+            <option value="Pure Random">🎲 Random</option>
+            <option value="Manual">✏️ Manual</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:.75rem;font-weight:700;color:var(--text2);margin-bottom:4px">Date</div>
+          <input type="date" id="manual-date" style="width:100%;font-family:'Source Code Pro',monospace;font-size:.82rem;padding:7px;border:1.5px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text)">
+        </div>
+      </div>
+      <!-- Note -->
+      <div style="margin-bottom:14px">
+        <div style="font-size:.75rem;font-weight:700;color:var(--text2);margin-bottom:4px">Note (optional)</div>
+        <input type="text" id="manual-note" placeholder="e.g. Lucky numbers, dream pick, uncle's numbers…" style="width:100%;font-family:'Lora',serif;font-size:.82rem;padding:7px;border:1.5px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text)">
+      </div>
+      <!-- Buttons -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="saveManualPick()" style="padding:9px 22px">💾 Save Pick</button>
+        <button class="btn btn-outline btn-sm" onclick="clearManualForm()">✕ Clear</button>
+        <span id="manual-pick-msg" style="font-size:.78rem"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Picks List -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h3 style="margin:0">⭐ My Saved Picks</h3>
@@ -3076,7 +3125,7 @@ function showTab(id){
   if(id==='consecutive') renderConsec();
   if(id==='heatmap') renderHeatmap();
   if(id==='history') renderHistory();
-  if(id==='mypicks') renderPicks();
+  if(id==='mypicks') { renderPicks(); initManualForm(); }
   if(id==='checker') renderChecker();
   if(id==='upcoming') renderUpcoming();
   if(id==='saved-results') renderSavedResults();
@@ -3638,6 +3687,79 @@ function setStatus(msg, ok=true){
 }
 
 // ── MY PICKS TAB ────────────────────────────────────────────────────────────
+// ── MANUAL PICK FORM ─────────────────────────────────────────────────────────
+function initManualForm(){
+  const el = document.getElementById('manual-num-inputs');
+  if(!el || el.children.length) return;
+  let h = '';
+  for(let i=0;i<6;i++){
+    h += `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+      <span style="font-size:.62rem;color:var(--text2);font-family:'Source Code Pro',monospace">#${i+1}</span>
+      <input type="number" min="1" max="58" id="mn${i}"
+        style="width:50px;font-family:'Source Code Pro',monospace;font-size:.88rem;padding:6px;border:1.5px solid var(--border);border-radius:50%;text-align:center;background:var(--bg2);color:var(--text)">
+    </div>`;
+  }
+  el.innerHTML = h;
+  // Default date to today
+  const dateEl = document.getElementById('manual-date');
+  if(dateEl && !dateEl.value) dateEl.value = new Date().toISOString().split('T')[0];
+}
+
+function toggleManualForm(){
+  const form  = document.getElementById('manual-pick-form');
+  const arrow = document.getElementById('manual-form-arrow');
+  const open  = form.style.display !== 'none';
+  form.style.display  = open ? 'none' : 'block';
+  arrow.textContent   = open ? '▸' : '▾';
+  if(!open) initManualForm();
+}
+
+function clearManualForm(){
+  for(let i=0;i<6;i++){
+    const el = document.getElementById(`mn${i}`);
+    if(el) el.value = '';
+  }
+  const noteEl = document.getElementById('manual-note');
+  if(noteEl) noteEl.value = '';
+  document.getElementById('manual-pick-msg').textContent = '';
+}
+
+async function saveManualPick(){
+  const nums = [];
+  for(let i=0;i<6;i++){
+    const v = parseInt(document.getElementById(`mn${i}`)?.value);
+    nums.push(v);
+  }
+  const strat = document.getElementById('manual-strat')?.value || 'Manual';
+  const date  = document.getElementById('manual-date')?.value  || new Date().toISOString().split('T')[0];
+  const note  = document.getElementById('manual-note')?.value?.trim() || '';
+  const msg   = document.getElementById('manual-pick-msg');
+
+  // Validate
+  if(nums.some(n=>isNaN(n)||n<1||n>58)){
+    msg.innerHTML = `<span style="color:var(--hot)">❌ All 6 numbers must be 1–58.</span>`; return;
+  }
+  if(new Set(nums).size !== 6){
+    msg.innerHTML = `<span style="color:var(--hot)">❌ Numbers must be unique.</span>`; return;
+  }
+
+  const sorted = [...nums].sort((a,b)=>a-b);
+  const ref    = genRef(strat);
+  const pick   = { nums:sorted, strat, date, ref, matches:{}, note, savedAt: Date.now() };
+
+  msg.innerHTML = `<span style="color:var(--text2)">⏳ Saving…</span>`;
+  try{
+    await fsSavePickDoc(pick);
+    _picks.unshift(pick);
+    clearManualForm();
+    msg.innerHTML = `<span style="color:var(--green)">✅ Saved as ${ref}</span>`;
+    setTimeout(()=>{ msg.textContent=''; }, 3500);
+    renderPicks();
+  }catch(e){
+    msg.innerHTML = `<span style="color:var(--hot)">❌ ${e.message}</span>`;
+  }
+}
+
 async function reloadPicks(){
   const countEl = document.getElementById('picks-count');
   if(countEl) countEl.textContent = '⏳ Loading…';
@@ -3696,7 +3818,8 @@ function renderPicks(){
         ${matchEntries.map(([draw,m])=>`<span style="background:var(--bg2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">Draw #${draw}: <strong style="color:${m>=3?'var(--green)':m>=1?'var(--warn)':'var(--text2)'}">${m}/6</strong></span>`).join('')}
       </div>`:''}
 
-      <!-- Footer row -->
+      <!-- Note -->
+      ${p.note?`<div style="font-size:.75rem;color:var(--text2);font-style:italic;margin-bottom:8px;padding:5px 8px;background:var(--bg2);border-radius:4px;border-left:3px solid var(--border2)">📝 ${p.note}</div>`:''}
       <div style="display:flex;justify-content:flex-end">
         <button class="btn btn-outline btn-sm" onclick="confirmDeletePick(${i})" style="font-size:.72rem;color:var(--hot);border-color:var(--hot)">🗑 Delete</button>
       </div>
@@ -4019,6 +4142,9 @@ window.filterHistory  = filterHistory;
 window.loadMoreHistory= loadMoreHistory;
 window.renderPicks    = renderPicks;
 window.reloadPicks    = reloadPicks;
+window.toggleManualForm = toggleManualForm;
+window.saveManualPick = saveManualPick;
+window.clearManualForm= clearManualForm;
 window.confirmDeletePick = confirmDeletePick;
 window.addNewDraw     = addNewDraw;
 window.confirmDeleteDraw = confirmDeleteDraw;
