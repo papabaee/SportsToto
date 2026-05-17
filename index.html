@@ -235,7 +235,7 @@ input[type=number]{font-family:'Source Code Pro',monospace;width:54px;padding:6p
       <h3 style="margin:0">⭐ My Saved Picks</h3>
       <div style="display:flex;align-items:center;gap:8px">
         <span id="picks-count" style="font-family:'Source Code Pro',monospace;font-size:.75rem;color:var(--text2)"></span>
-        <button class="btn btn-outline btn-sm" onclick="renderPicks()" style="font-size:.72rem">↺ Refresh</button>
+        <button class="btn btn-outline btn-sm" onclick="reloadPicks()" style="font-size:.72rem">↺ Refresh</button>
       </div>
     </div>
     <div id="picks-list"></div>
@@ -3556,9 +3556,19 @@ const db = firebase.firestore();
 // ── FIRESTORE HELPERS ─────────────────────────────────────────────────────────
 async function fsLoadDraws(){
   try{
-    const snap = await db.collection('draws').orderBy('drawId','desc').get();
-    return snap.docs.map(d=>{ const v=d.data(); return [v.drawId, v.date, v.nums]; });
-  }catch(e){ console.warn('fsLoadDraws error',e); return []; }
+    const snap = await db.collection('draws').get();
+    const draws = snap.docs.map(d=>{
+      const v = d.data();
+      return [Number(v.drawId), v.date, (v.nums||[]).map(Number)];
+    });
+    // Sort newest first (highest drawId first)
+    draws.sort((a,b)=>b[0]-a[0]);
+    return draws;
+  }catch(e){
+    console.warn('fsLoadDraws error', e);
+    setStatus(`⚠️ Could not load draws: ${e.message}`, false);
+    return [];
+  }
 }
 
 async function fsSaveDraw(drawId, date, nums){
@@ -3577,13 +3587,41 @@ async function fsDeleteAllDraws(ids){
 
 async function fsLoadPicks(){
   try{
-    const snap = await db.collection('picks').orderBy('savedAt','desc').get();
-    return snap.docs.map(d=>d.data());
-  }catch(e){ console.warn('fsLoadPicks error',e); return []; }
+    // Don't use orderBy — it requires a Firestore index that may not exist.
+    // Load all picks and sort in JS instead.
+    const snap = await db.collection('picks').get();
+    const picks = snap.docs.map(d=>{
+      const v = d.data();
+      // Defensive: ensure nums is array of numbers, matches is object
+      return {
+        ref:     v.ref     || d.id,
+        strat:   v.strat   || 'Unknown',
+        date:    v.date    || '',
+        nums:    (v.nums   || []).map(Number),
+        matches: v.matches || {},
+        savedAt: v.savedAt || 0,
+      };
+    });
+    // Sort newest first
+    picks.sort((a,b)=>b.savedAt - a.savedAt);
+    return picks;
+  }catch(e){
+    console.warn('fsLoadPicks error', e);
+    setStatus(`⚠️ Could not load picks: ${e.message}`, false);
+    return [];
+  }
 }
 
 async function fsSavePickDoc(pick){
-  await db.collection('picks').doc(pick.ref).set({...pick, savedAt: Date.now()});
+  const doc = {
+    ref:     pick.ref,
+    strat:   pick.strat,
+    date:    pick.date,
+    nums:    pick.nums.map(Number),
+    matches: pick.matches || {},
+    savedAt: pick.savedAt || Date.now(),
+  };
+  await db.collection('picks').doc(pick.ref).set(doc);
 }
 
 async function fsDeletePick(ref){
@@ -3600,6 +3638,13 @@ function setStatus(msg, ok=true){
 }
 
 // ── MY PICKS TAB ────────────────────────────────────────────────────────────
+async function reloadPicks(){
+  const countEl = document.getElementById('picks-count');
+  if(countEl) countEl.textContent = '⏳ Loading…';
+  _picks = await fsLoadPicks();
+  renderPicks();
+}
+
 function renderPicks(){
   const el=document.getElementById('picks-list');
   const countEl=document.getElementById('picks-count');
@@ -3973,6 +4018,7 @@ window.savePick       = savePick;
 window.filterHistory  = filterHistory;
 window.loadMoreHistory= loadMoreHistory;
 window.renderPicks    = renderPicks;
+window.reloadPicks    = reloadPicks;
 window.confirmDeletePick = confirmDeletePick;
 window.addNewDraw     = addNewDraw;
 window.confirmDeleteDraw = confirmDeleteDraw;
