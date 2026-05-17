@@ -3685,6 +3685,137 @@ function renderChecker(){
   renderAddedDrawsList();
 }
 
+// ── PRIZE ENGINE ──────────────────────────────────────────────────────────────
+const PRIZES = {0:0, 1:0, 2:0, 3:8, 4:80, 5:6888, 6:8888888};
+
+function prizeLabel(m){
+  if(m===6) return '🎉 JACKPOT! RM 8,888,888';
+  if(m===5) return '🌟 RM 6,888';
+  if(m===4) return '✅ RM 80';
+  if(m===3) return '🎫 RM 8';
+  return '—';
+}
+
+function fmtRM(n){
+  return 'RM ' + n.toLocaleString('en-MY', {minimumFractionDigits:0});
+}
+
+function checkPicksAgainstDraw(drawId, winNums){
+  // Returns [{pick, matched:[], count, prize}]
+  return _picks.map(p=>{
+    const matched = p.nums.filter(n=>winNums.includes(n));
+    const count   = matched.length;
+    const prize   = PRIZES[count]||0;
+    return {pick:p, matched, count, prize};
+  });
+}
+
+async function saveMatchResults(drawId, results){
+  // Update each pick's matches map in Firestore + cache
+  const promises = results
+    .filter(r=>r.count>0)
+    .map(async r=>{
+      r.pick.matches = r.pick.matches||{};
+      r.pick.matches[drawId] = r.count;
+      try{ await fsSavePickDoc(r.pick); }catch(e){ console.warn('match save error',e); }
+    });
+  await Promise.all(promises);
+}
+
+function showResultsPopup(drawId, date, winNums, results){
+  const totalWon   = results.reduce((s,r)=>s+r.prize,0);
+  const totalPicks = results.length;
+  const winners    = results.filter(r=>r.count>=3);
+
+  // Build rows
+  const rows = results.map((r,i)=>{
+    const isWin = r.count>=3;
+    const matchedSet = new Set(r.matched);
+    const numBalls = r.pick.nums.map(n=>{
+      const cls = matchedSet.has(n) ? 'ball-hot' : 'ball-pick';
+      const sty = matchedSet.has(n) ? '' : 'opacity:.45';
+      return `<span class="ball ${cls}" style="width:30px;height:30px;font-size:.72rem;${sty}">${n}</span>`;
+    }).join('');
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--bg2);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="min-width:22px;font-family:'Source Code Pro',monospace;font-size:.7rem;color:var(--text2)">#${i+1}</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;flex-wrap:wrap">
+          <span class="ref-code" style="font-size:.7rem">${r.pick.ref}</span>
+          <span style="font-size:.68rem;color:var(--text2)">${r.pick.strat}</span>
+        </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">${numBalls}</div>
+      </div>
+      <div style="text-align:right;min-width:90px">
+        <div style="font-weight:700;font-size:.82rem;color:${isWin?'var(--green)':'var(--text2)'}">${r.count} matched</div>
+        <div style="font-size:.78rem;color:${isWin?'var(--green)':'var(--text2)'}">${isWin?fmtRM(r.prize):'No prize'}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Summary banner
+  const summaryBg   = totalWon>0 ? 'var(--green-bg)' : 'var(--bg2)';
+  const summaryClr  = totalWon>0 ? 'var(--green)'    : 'var(--text2)';
+  const emoji       = totalWon>=6888888?'🎉🎉🎉':totalWon>=6888?'🌟':totalWon>0?'✅':'😐';
+
+  const popup = document.createElement('div');
+  popup.id = 'results-popup';
+  popup.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px';
+  popup.innerHTML=`
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:520px;max-height:88vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)">
+      <!-- Header -->
+      <div style="background:var(--text);color:var(--bg);padding:16px 20px;border-radius:12px 12px 0 0">
+        <div style="font-size:.7rem;opacity:.6;font-family:'Source Code Pro',monospace;margin-bottom:2px">Draw #${drawId} · ${date}</div>
+        <div style="font-size:.95rem;font-weight:700;margin-bottom:8px">Winning Numbers</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${winNums.map(n=>`<span class="ball ball-hot" style="width:34px;height:34px;font-size:.8rem">${n}</span>`).join('')}
+        </div>
+      </div>
+
+      <!-- Summary bar -->
+      <div style="background:${summaryBg};padding:12px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:.72rem;color:var(--text2);margin-bottom:2px">${totalPicks} pick${totalPicks===1?'':'s'} checked · ${winners.length} won</div>
+          <div style="font-size:1.1rem;font-weight:700;color:${summaryClr}">${emoji} Total won: ${fmtRM(totalWon)}</div>
+        </div>
+        <div style="text-align:right">
+          ${[3,4,5,6].filter(m=>results.some(r=>r.count===m)).map(m=>`<div style="font-size:.75rem;color:var(--text2)">${results.filter(r=>r.count===m).length}× ${prizeLabel(m)}</div>`).join('')}
+        </div>
+      </div>
+
+      <!-- Pick rows -->
+      <div style="padding:0 20px">${rows}</div>
+
+      <!-- Footer -->
+      <div style="padding:14px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--bg2)">
+        <button class="btn btn-outline" onclick="document.getElementById('results-popup').remove()">Close</button>
+        <button class="btn btn-primary" onclick="printResults('${drawId}','${date}')">🖨 Print Report</button>
+      </div>
+    </div>`;
+  popup.addEventListener('click',e=>{ if(e.target===popup) popup.remove(); });
+  document.body.appendChild(popup);
+}
+
+function printResults(drawId, date){
+  const popup = document.getElementById('results-popup');
+  const content = popup ? popup.querySelector('div').innerHTML : '';
+  const win = window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html><head><title>Toto Results Draw #${drawId}</title>
+    <style>
+      body{font-family:serif;max-width:600px;margin:20px auto;color:#222}
+      .ball{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;font-size:13px;font-weight:700;border:2px solid #333;margin:2px;font-family:monospace}
+      .ball-hot{color:#C0392B;background:#FDE8E6;border-color:#C0392B}
+      .ball-pick{color:#333;background:#f5f5e0;border-color:#aaa;opacity:.5}
+      .ref-code{font-family:monospace;font-size:12px;background:#f5f5e0;padding:1px 5px;border-radius:3px}
+      @media print{button{display:none}}
+    </style></head><body>
+    <h2 style="margin-bottom:4px">Supreme Toto 1/58 — Draw Report</h2>
+    <p style="color:#666;font-size:13px">Draw #${drawId} · ${date} · Generated ${new Date().toLocaleString('en-MY')}</p>
+    ${content}
+    <script>window.onload=()=>window.print()<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
 async function addNewDraw(){
   const drawId=parseInt(document.getElementById('new-draw-id').value);
   const date=document.getElementById('new-draw-date').value;
@@ -3704,27 +3835,43 @@ async function addNewDraw(){
     await fsSaveDraw(drawId, date, sorted);
     _added.unshift([drawId, date, sorted]);
     rebuildStats();
+    // ── Auto-check all saved picks ──────────────────────────────────────────
+    const results = checkPicksAgainstDraw(drawId, sorted);
+    await saveMatchResults(drawId, results);
+    // ── Clear inputs ────────────────────────────────────────────────────────
     for(let i=0;i<6;i++) document.getElementById(`nd${i}`).value='';
     document.getElementById('new-draw-id').value=LIVE_RAW[0][0]+1;
     document.getElementById('new-draw-date').value='';
-    msg.innerHTML=`<span style="color:var(--green)">✅ Draw #${drawId} saved to Firebase. Stats updated with ${LIVE_RAW.length} total draws.</span>`;
-    setTimeout(()=>msg.innerHTML='',5000);
+    msg.innerHTML=`<span style="color:var(--green)">✅ Draw #${drawId} saved. Checking picks…</span>`;
+    setTimeout(()=>msg.innerHTML='',4000);
     renderAddedDrawsList();
+    // ── Show results popup ──────────────────────────────────────────────────
+    showResultsPopup(drawId, date, sorted, results);
   }catch(e){
     msg.innerHTML=`<span style="color:var(--hot)">❌ Firebase error: ${e.message}</span>`;
   }
 }
 
+function reCheckDraw(id){
+  const draw = _added.find(d=>d[0]===id);
+  if(!draw) return;
+  const results = checkPicksAgainstDraw(id, draw[2]);
+  showResultsPopup(id, draw[1], draw[2], results);
+}
+
 function renderAddedDrawsList(){
   const el=document.getElementById('added-draws-list');
   if(!_added.length){ el.innerHTML=`<p style="font-size:.82rem;color:var(--text2)">No draws added yet.</p>`; return; }
-  let html=`<table><thead><tr><th>Draw #</th><th>Date</th><th>Numbers</th><th></th></tr></thead><tbody>`;
+  let html=`<table><thead><tr><th>Draw #</th><th>Date</th><th>Numbers</th><th>Actions</th></tr></thead><tbody>`;
   _added.forEach(([id,date,nums])=>{
     html+=`<tr>
       <td><strong>#${id}</strong></td>
       <td>${date}</td>
       <td>${nums.map(n=>ball(n)).join('')}</td>
-      <td><button onclick="confirmDeleteDraw(${id})" style="font-size:.7rem;padding:3px 8px;border:1px solid var(--hot);border-radius:4px;background:#FEF0EF;color:var(--hot);cursor:pointer">🗑</button></td>
+      <td style="white-space:nowrap;display:flex;gap:5px">
+        <button onclick="reCheckDraw(${id})" style="font-size:.7rem;padding:3px 8px;border:1px solid var(--accent);border-radius:4px;background:var(--bg2);color:var(--accent);cursor:pointer">📊 Results</button>
+        <button onclick="confirmDeleteDraw(${id})" style="font-size:.7rem;padding:3px 8px;border:1px solid var(--hot);border-radius:4px;background:#FEF0EF;color:var(--hot);cursor:pointer">🗑</button>
+      </td>
     </tr>`;
   });
   html+=`</tbody></table>`;
@@ -3832,6 +3979,8 @@ window.confirmDeleteDraw = confirmDeleteDraw;
 window.confirmClearAdded = confirmClearAdded;
 window.closeModal     = closeModal;
 window.checkResults   = checkResults;
+window.printResults   = printResults;
+window.reCheckDraw    = reCheckDraw;
 
 // ── INIT — load Firebase data then build stats ────────────────────────────────
 (async function(){
