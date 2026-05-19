@@ -3214,46 +3214,53 @@ function numReason(n, role, clusterSeed=[]){
   return reasons;
 }
 
-function smartMixPick(variationSeed=0){
-  // Slightly vary seeds per variation to get different sets
-  const topN = 25 + variationSeed*2;
-  const hotPool = freqRank.slice(0, topN).map(x=>x.n);
-  // Shuffle with deterministic offset so sets differ
-  const shuffled = hotPool.sort((a,b)=>{
-    const h1 = ((a*17+variationSeed*31)%97); const h2=((b*17+variationSeed*31)%97);
-    return h2-h1+Math.random()*0.001;
-  });
-  const seeds = shuffled.filter(n=>DUE_SET.has(n)).slice(0,3);
-  const finalSeeds = seeds.length>=2 ? seeds.slice(0,3)
-    : shuffled.slice(0,3);
+// Simple seeded RNG — guarantees different results per seed without Math.random collision
+function seededRand(seed){
+  let s = seed + 1;
+  return function(){
+    s = (s * 16807 + 0) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
 
-  // Score all non-seed numbers for partnership
+function smartMixPick(variationSeed=0){
+  const rng = seededRand(variationSeed * 1000 + Date.now() % 997);
+
+  // Vary the pool size per variation
+  const topN = Math.min(58, 20 + variationSeed * 3);
+  const hotPool = freqRank.slice(0, topN).map(x=>x.n);
+
+  // Shuffle using seeded RNG — guarantees different order per seed
+  const shuffled = [...hotPool].sort(()=> rng() - 0.5);
+
+  // Seeds: prefer hot+due combo, fall back to just hot
+  const seeds = shuffled.filter(n=>DUE_SET.has(n)).slice(0, 3);
+  const finalSeeds = seeds.length >= 2 ? seeds.slice(0, 3) : shuffled.slice(0, 3);
+
+  // Score all non-seed candidates
   const partners = [];
-  for(let n=1;n<=NUMS;n++){
+  for(let n=1; n<=NUMS; n++){
     if(finalSeeds.includes(n)) continue;
-    partners.push({n, score: scoreNumber(n, finalSeeds)});
+    partners.push({n, score: scoreNumber(n, finalSeeds) + rng()*0.001}); // tiny noise prevents identical partners
   }
   partners.sort((a,b)=>b.score-a.score);
 
   const pick = [...finalSeeds];
   for(const p of partners){
-    if(pick.length>=6) break;
+    if(pick.length >= 6) break;
     pick.push(p.n);
   }
 
-  // Score each picked number for ranking (best → worst)
   const rankedPick = pick.map(n=>({
     n,
-    role: finalSeeds.includes(n)?'seed':'partner',
+    role: finalSeeds.includes(n) ? 'seed' : 'partner',
     score: scoreNumber(n, finalSeeds),
-    reasons: numReason(n, finalSeeds.includes(n)?'seed':'partner', finalSeeds)
+    reasons: numReason(n, finalSeeds.includes(n) ? 'seed' : 'partner', finalSeeds)
   })).sort((a,b)=>b.score-a.score);
 
   const sortedNums = rankedPick.map(x=>x.n);
   const avoidList  = getColdTowards(sortedNums);
-
-  // Overall set score = avg of individual scores
-  const setScore = rankedPick.reduce((s,x)=>s+x.score,0)/rankedPick.length;
+  const setScore   = rankedPick.reduce((s,x)=>s+x.score, 0) / rankedPick.length;
 
   return {nums:sortedNums, ranked:rankedPick, seeds:finalSeeds, avoid:avoidList, setScore};
 }
@@ -3288,11 +3295,16 @@ function generate(strategy){
   }
   const refCode=genRef(stratLabel);
   const now=new Date().toISOString().split('T')[0];
+  const copyStr=nums.join(', ');
   const html=`
     <div style="margin-bottom:8px;font-size:.82rem;color:var(--text2)">${stratLabel}</div>
     <div class="nums">${nums.map(n=>ball(n,'ball-pick')).join('')}</div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;flex-wrap:wrap;gap:8px">
-      <span class="ref-code">${refCode}</span>
+    <div style="font-family:'Source Code Pro',monospace;font-size:.82rem;color:var(--accent);background:var(--bg2);padding:6px 10px;border-radius:4px;margin:8px 0;letter-spacing:.3px">${copyStr}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;gap:6px">
+        <span class="ref-code">${refCode}</span>
+        <button class="btn btn-outline btn-sm" onclick="copyNums('${copyStr}',this)" style="font-size:.72rem">📋 Copy</button>
+      </div>
       <button class="btn btn-primary btn-sm" onclick='savePick(${JSON.stringify(nums)},"${stratLabel}","${refCode}","${now}")'>💾 Save</button>
     </div>
     <div id="save-confirm" style="font-size:.78rem;color:var(--green);margin-top:6px"></div>`;
@@ -3300,13 +3312,26 @@ function generate(strategy){
 }
 
 function generateMultiSmart(){
-  const sets=[];
-  // Generate 8 candidates, pick top 5 by set score
-  for(let i=0;i<8;i++) sets.push(smartMixPick(i));
+  const seen  = new Set(); // fingerprint each set to detect true duplicates
+  const sets  = [];
+  let   tries = 0;
+
+  // Keep generating until we have 5 unique sets (max 20 attempts)
+  while(sets.length < 5 && tries < 20){
+    const res = smartMixPick(tries);
+    const key = [...res.nums].sort((a,b)=>a-b).join(',');
+    if(!seen.has(key)){
+      seen.add(key);
+      sets.push(res);
+    }
+    tries++;
+  }
+
+  // Rank by set score
   sets.sort((a,b)=>b.setScore-a.setScore);
-  const top5=sets.slice(0,5);
-  const now=new Date().toISOString().split('T')[0];
-  const medals=['🥇','🥈','🥉','4️⃣','5️⃣'];
+  const now    = new Date().toISOString().split('T')[0];
+  const medals = ['🥇','🥈','🥉','4️⃣','5️⃣'];
+
   const scoreBar=(s)=>{
     const pct=Math.min(Math.round(s*100),100);
     return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px">
@@ -3317,14 +3342,13 @@ function generateMultiSmart(){
     </div>`;
   };
 
-  let html=`<div style="margin-bottom:12px;font-size:.8rem;color:var(--text2)">5 Smart Mix sets generated & ranked by overall score. Click any set to see full reasoning.</div>`;
+  let html=`<div style="margin-bottom:12px;font-size:.8rem;color:var(--text2)">${sets.length} unique Smart Mix sets ranked by score. Click a set for full reasoning.</div>`;
 
-  top5.forEach((res,idx)=>{
-    const ref=genRef('SM');
-    const setId=`set-${idx}`;
-    const detailId=`detail-${idx}`;
+  sets.forEach((res,idx)=>{
+    const ref      = genRef('SM');
+    const detailId = `detail-${idx}`;
+    const copyStr  = [...res.nums].sort((a,b)=>a-b).join(', ');
 
-    // Balls shown in ranked order (best number first)
     const rankedBalls = res.ranked.map((r,ri)=>{
       const roleClass = r.role==='seed'?'ball-hot':'ball-warm';
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">
@@ -3334,7 +3358,6 @@ function generateMultiSmart(){
       </div>`;
     }).join('');
 
-    // Per-number detail rows
     const detailRows = res.ranked.map((r,ri)=>`
       <div style="padding:8px 0;border-bottom:1px solid var(--bg2);display:flex;gap:10px;align-items:flex-start">
         <div style="display:flex;flex-direction:column;align-items:center;gap:2px;min-width:44px">
@@ -3347,19 +3370,23 @@ function generateMultiSmart(){
         </div>
       </div>`).join('');
 
-    // Avoid section
     const avoidBalls = res.avoid.map(n=>`<span class="ball ball-avoid" style="width:30px;height:30px;font-size:.72rem">${n}</span>`).join('');
 
     html+=`
-    <div class="pick-card" id="${setId}" style="cursor:pointer;border-color:${idx===0?'var(--accent)':'var(--border)'}">
+    <div class="pick-card" style="cursor:pointer;border-color:${idx===0?'var(--accent)':'var(--border)'}">
       <div onclick="toggleDetail('${detailId}')" style="display:flex;align-items:flex-start;gap:10px">
         <div style="font-size:1.4rem;line-height:1">${medals[idx]}</div>
         <div style="flex:1">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-            <span style="font-size:.82rem;font-weight:700;color:var(--text)">Set ${idx+1} ${idx===0?'<span style="font-size:.7rem;color:var(--accent)">(Best)</span>':''}</span>
+            <span style="font-size:.82rem;font-weight:700;color:var(--text)">Set ${idx+1}${idx===0?' <span style="font-size:.7rem;color:var(--accent)">(Best)</span>':''}</span>
             <span style="font-size:.72rem;color:var(--text2);font-style:italic">tap for reasoning ▾</span>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">${rankedBalls}</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">${rankedBalls}</div>
+          <!-- Copy strip -->
+          <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+            <span style="font-family:'Source Code Pro',monospace;font-size:.8rem;color:var(--accent);background:var(--bg2);padding:4px 8px;border-radius:4px;flex:1">${copyStr}</span>
+            <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();copyNums('${copyStr}',this)" style="font-size:.7rem;white-space:nowrap">📋 Copy</button>
+          </div>
           ${scoreBar(res.setScore)}
         </div>
       </div>
@@ -3383,6 +3410,24 @@ function generateMultiSmart(){
   });
 
   document.getElementById('pred-output').innerHTML=html;
+}
+
+function copyNums(str, btn){
+  navigator.clipboard.writeText(str).then(()=>{
+    const orig = btn.textContent;
+    btn.textContent = '✅ Copied!';
+    btn.style.color = 'var(--green)';
+    setTimeout(()=>{ btn.textContent=orig; btn.style.color=''; }, 2000);
+  }).catch(()=>{
+    // Fallback for browsers that block clipboard
+    const ta = document.createElement('textarea');
+    ta.value = str; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent='✅ Copied!';
+    setTimeout(()=>btn.textContent='📋 Copy', 2000);
+  });
 }
 
 function toggleDetail(id){
@@ -4150,6 +4195,7 @@ window.selectStrat    = selectStrat;
 window.generateSelected = generateSelected;
 window.generate       = generate;
 window.toggleDetail   = toggleDetail;
+window.copyNums       = copyNums;
 window.savePick       = savePick;
 window.filterHistory  = filterHistory;
 window.loadMoreHistory= loadMoreHistory;
