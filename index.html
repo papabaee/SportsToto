@@ -167,6 +167,35 @@ input[type=number]{font-family:'Source Code Pro',monospace;width:54px;padding:6p
       ✨ Generate Pick
     </button>
   </div>
+
+  <!-- Stats Snapshot Panel -->
+  <div class="card" id="stats-snapshot" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:6px">
+      <h3 style="margin:0;font-size:.88rem">📊 Stats Snapshot <span style="font-size:.7rem;font-weight:400;color:var(--text2);font-style:italic">— data used at generation time</span></h3>
+      <span id="snap-timestamp" style="font-family:'Source Code Pro',monospace;font-size:.68rem;color:var(--text2)"></span>
+    </div>
+    <!-- Summary row -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-bottom:14px" id="snap-summary"></div>
+    <!-- Hot + Overdue columns -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div>
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--hot);margin-bottom:6px">🔥 Top 10 Hot</div>
+        <div id="snap-hot" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+      </div>
+      <div>
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--cold);margin-bottom:6px">⏳ Top 10 Overdue</div>
+        <div id="snap-overdue" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+      </div>
+    </div>
+    <!-- Last 5 draws included -->
+    <div>
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text2);margin-bottom:6px">📋 Last 5 Draws Included</div>
+      <div id="snap-recent-draws"></div>
+    </div>
+    <!-- Warning if data looks stale -->
+    <div id="snap-warning" style="display:none;margin-top:10px;padding:8px 12px;background:var(--warn-bg);border:1px solid var(--warn);border-radius:6px;font-size:.78rem;color:var(--warn)"></div>
+  </div>
+
   <div class="card" id="pred-output-card" style="display:none">
     <div id="pred-output"></div>
   </div>
@@ -3198,19 +3227,34 @@ function scoreNumber(n, clusterSeed=[]){
 
 function numReason(n, role, clusterSeed=[]){
   const freqRankPos = freqRank.findIndex(x=>x.n===n)+1;
-  const absPos      = absRank.findIndex(x=>x.n===n)+1;
   const coTotal     = clusterSeed.length
     ? clusterSeed.reduce((s,p)=>(s+(CO[p]&&CO[p][n]?CO[p][n]:0)),0) : 0;
+
+  // absence[n] = index in LIVE_RAW where n was last seen (0 = most recent draw)
+  // Convert to human-readable: how many draws ago
+  const absDraws = STATS.absence[n];
+  const lastDrawNum = absDraws < LIVE_RAW.length ? LIVE_RAW[absDraws][0] : null;
+  const absLabel = absDraws === 0
+    ? `Appeared in the latest draw`
+    : lastDrawNum
+      ? `Last seen in Draw #${lastDrawNum} (${absDraws} draw${absDraws===1?'':'s'} ago)`
+      : `Not seen in dataset`;
+
   const reasons=[];
   if(freqRankPos<=10)       reasons.push(`Top ${freqRankPos} most frequent (${STATS.freq[n]}× drawn, ${pct(STATS.freq[n])}%)`);
   else if(freqRankPos<=20)  reasons.push(`Above-average frequency — rank #${freqRankPos} of 58`);
   else                      reasons.push(`Frequency rank #${freqRankPos} of 58 (${STATS.freq[n]}× drawn)`);
-  if(STATS.absence[n]<=3)   reasons.push(`Recently active — seen ${STATS.absence[n]} draw(s) ago`);
-  else if(STATS.absence[n]<=10) reasons.push(`Moderately absent — ${STATS.absence[n]} draws since last appearance`);
-  else                      reasons.push(`Overdue — not seen in ${STATS.absence[n]} draws (due for return)`);
-  if(coTotal>0)             reasons.push(`Co-appeared with cluster seed ${coTotal}× historically`);
-  if(role==='seed')         reasons.push(`Acts as cluster anchor — high frequency + overdue combo`);
-  if(role==='partner')      reasons.push(`Strong cluster partner — frequently drawn alongside core numbers`);
+
+  reasons.push(absDraws<=3
+    ? `🟢 Recently active — ${absLabel}`
+    : absDraws<=15
+      ? `🟡 Moderately absent — ${absLabel}`
+      : `🔴 Overdue — ${absLabel}`
+  );
+
+  if(coTotal>0)    reasons.push(`Co-appeared with cluster seed ${coTotal}× historically`);
+  if(role==='seed')    reasons.push(`Acts as cluster anchor — high frequency + overdue combo`);
+  if(role==='partner') reasons.push(`Strong cluster partner — frequently drawn alongside core numbers`);
   return reasons;
 }
 
@@ -4059,7 +4103,9 @@ async function addNewDraw(){
   const sorted=nums.sort((a,b)=>a-b);
   try{
     await fsSaveDraw(drawId, date, sorted);
-    _added.unshift([drawId, date, sorted]);
+    // Re-fetch ALL added draws from Firestore (not just prepend locally)
+    // This ensures full accuracy even if other devices added draws too
+    _added = await fsLoadDraws();
     rebuildStats();
     // ── Auto-check all saved picks ──────────────────────────────────────────
     const results = checkPicksAgainstDraw(drawId, sorted);
@@ -4178,10 +4224,80 @@ function selectStrat(s){
   document.querySelectorAll('.strat-card').forEach(c=>c.classList.remove('active-strat'));
   document.getElementById('sc-'+s).classList.add('active-strat');
 }
+// ── STATS SNAPSHOT ───────────────────────────────────────────────────────────
+function renderStatsSnapshot(){
+  const panel = document.getElementById('stats-snapshot');
+  panel.style.display = 'block';
+
+  // Timestamp
+  const now = new Date();
+  document.getElementById('snap-timestamp').textContent =
+    `Generated ${now.toLocaleDateString('en-MY')} ${now.toLocaleTimeString('en-MY',{hour:'2-digit',minute:'2-digit'})}`;
+
+  // Summary cards
+  const lastDraw   = LIVE_RAW.length ? LIVE_RAW[0] : null;
+  const firstDraw  = LIVE_RAW.length ? LIVE_RAW[LIVE_RAW.length-1] : null;
+  const addedCount = _added.length;
+  const avgFreq    = (LIVE_RAW.length * 6 / NUMS).toFixed(1);
+
+  document.getElementById('snap-summary').innerHTML = `
+    <div class="stat-box"><div class="val">${LIVE_RAW.length}</div><div class="lbl">Total draws used</div></div>
+    <div class="stat-box" style="background:var(--green-bg)"><div class="val" style="color:var(--green)">${addedCount}</div><div class="lbl">Your added draws</div></div>
+    <div class="stat-box"><div class="val">${lastDraw ? lastDraw[1] : '—'}</div><div class="lbl">Latest draw date</div></div>
+    <div class="stat-box"><div class="val">${lastDraw ? '#'+lastDraw[0] : '—'}</div><div class="lbl">Latest draw #</div></div>
+    <div class="stat-box"><div class="val">${avgFreq}</div><div class="lbl">Expected avg freq</div></div>
+    <div class="stat-box"><div class="val">${firstDraw ? firstDraw[1].slice(0,4) : '—'}–${lastDraw ? lastDraw[1].slice(0,4) : '—'}</div><div class="lbl">Date range</div></div>
+  `;
+
+  // Top 10 hot numbers with freq
+  const hotHtml = freqRank.slice(0,10).map((x,i)=>`
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <span class="ball ball-hot" style="width:30px;height:30px;font-size:.72rem">${x.n}</span>
+      <span style="font-size:.58rem;font-family:'Source Code Pro',monospace;color:var(--text2)">${x.v}×</span>
+    </div>`).join('');
+  document.getElementById('snap-hot').innerHTML = hotHtml;
+
+  // Top 10 overdue with absence count + last draw #
+  const overdueHtml = absRank.slice(0,10).map(x=>{
+    const lastDrawNum = x.v < LIVE_RAW.length ? LIVE_RAW[x.v][0] : null;
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px" title="Last in Draw #${lastDrawNum||'?'}">
+      <span class="ball ball-cold" style="width:30px;height:30px;font-size:.72rem">${x.n}</span>
+      <span style="font-size:.58rem;font-family:'Source Code Pro',monospace;color:var(--cold2)">${x.v}ago</span>
+    </div>`;
+  }).join('');
+  document.getElementById('snap-overdue').innerHTML = overdueHtml;
+
+  // Last 5 draws
+  const recent = LIVE_RAW.slice(0,5);
+  const recentHtml = recent.map(([id,date,nums])=>{
+    const isAdded = _added.some(d=>d[0]===id);
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bg2);font-size:.78rem;flex-wrap:wrap">
+      <span style="font-family:'Source Code Pro',monospace;min-width:52px;color:${isAdded?'var(--green)':'var(--text2)'}">#${id}${isAdded?' ✦':''}</span>
+      <span style="color:var(--text2);min-width:88px">${date}</span>
+      <div style="display:flex;gap:3px">${nums.map(n=>`<span class="dball">${n}</span>`).join('')}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('snap-recent-draws').innerHTML = recentHtml || '<p style="font-size:.78rem;color:var(--text2)">No draws loaded.</p>';
+
+  // Warning: check if latest draw is older than 7 days
+  const warnEl = document.getElementById('snap-warning');
+  if(lastDraw){
+    const daysSince = Math.floor((Date.now() - new Date(lastDraw[1]).getTime()) / 86400000);
+    if(daysSince > 7){
+      warnEl.style.display = 'block';
+      warnEl.innerHTML = `⚠️ Latest draw is from <strong>${lastDraw[1]}</strong> (${daysSince} days ago). Sports Toto draws are Wed/Sat/Sun — you may be missing recent results. Add the latest draws in the ➕ Add Draw tab to improve prediction accuracy.`;
+    } else {
+      warnEl.style.display = 'none';
+    }
+  }
+}
+
 function generateSelected(){
   const btn=document.getElementById('gen-btn');
   btn.textContent='⏳ Generating…'; btn.disabled=true;
+  rebuildStats();
   setTimeout(()=>{
+    renderStatsSnapshot();
     generate(currentStrat);
     document.getElementById('pred-output-card').style.display='block';
     btn.textContent='✨ Generate Pick'; btn.disabled=false;
@@ -4193,6 +4309,7 @@ function generateSelected(){
 window.showTab        = showTab;
 window.selectStrat    = selectStrat;
 window.generateSelected = generateSelected;
+window.renderStatsSnapshot = renderStatsSnapshot;
 window.generate       = generate;
 window.toggleDetail   = toggleDetail;
 window.copyNums       = copyNums;
